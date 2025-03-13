@@ -1,4 +1,5 @@
 from transformers import CLIPTokenizer
+import torch
 
 from mgds.PipelineModule import PipelineModule
 from mgds.pipelineModuleTypes.RandomAccessPipelineModule import RandomAccessPipelineModule
@@ -25,6 +26,9 @@ class DecodeTokens(
 
     def get_item(self, variation: int, index: int, requested_name: str = None) -> dict:
         tokens = self._get_previous_item(variation, self.in_name, index)
+
+        if len(tokens.shape) > 1:
+            tokens = torch.cat(tokens.unbind(0))
 
         text = self.tokenizer.decode(
             token_ids=tokens,
