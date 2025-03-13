@@ -11,13 +11,16 @@ from mgds.pipelineModuleTypes.RandomAccessPipelineModule import RandomAccessPipe
 # Mask:   1111111111111111000001111111111111111000000000000000000000000000000
 
 
-# TODO: In EncodeClipText, handle shapes of (n, 77), cat hidden states
-
 # TODO: Variations / Augmentation for padding and attention mask:
 # - Different max_pad_length
 # - Shuffle text-chunks around chunks
 # - Different masks, some with padding (or patches of padding) enabled
 # It should learn that padding and chunk number is irrelevant.
+
+
+def log(text: str):
+    #print(text)
+    pass
 
 
 class ChunkTokenize(
@@ -31,7 +34,7 @@ class ChunkTokenize(
             mask_chunks_out_name: str,
             tokenizer: CLIPTokenizer | T5Tokenizer | T5TokenizerFast | GemmaTokenizer | LlamaTokenizer,
             max_num_chunks: int = 3,
-            max_pad_length: int = 7,  # This should be accounted for when choosing a max_token_length
+            max_pad_length: int = 7,  # This should be accounted for when choosing max_num_chunks
             max_last_pad_length: int = 2,
     ):
         super(ChunkTokenize, self).__init__()
@@ -58,7 +61,7 @@ class ChunkTokenize(
     def get_item(self, variation: int, index: int, requested_name: str = None) -> dict:
         text_chunks = self._get_previous_item(variation, self.text_chunks_in_name, index)
 
-        print(f"Tokenizer BOS: {self.tokenizer.bos_token_id}, EOS: {self.tokenizer.eos_token_id}, PAD: {self.tokenizer.pad_token_id}")
+        log(f"Tokenizer BOS: {self.tokenizer.bos_token_id}, EOS: {self.tokenizer.eos_token_id}, PAD: {self.tokenizer.pad_token_id}")
         bos = torch.full((1,), self.tokenizer.bos_token_id)
         eos = torch.full((1,), self.tokenizer.eos_token_id)
 
@@ -77,17 +80,17 @@ class ChunkTokenize(
         token_chunks = [torch.cat(tokens) for tokens in token_chunks]
         mask_chunks  = [torch.LongTensor(mask) for mask in mask_chunks] # Clip Tokenizer outputs mask as int64
 
-        print("===> Processed Chunks:")
+        log("===> Processed Chunks:")
         for i, (chunk, mask) in enumerate(zip(token_chunks, mask_chunks)):
-            print(f"=> Tokens {i} ({chunk.shape})\n{chunk}")
-            print(f"=> Mask {i} ({mask.shape})\n{mask}")
+            log(f"=> Tokens {i} ({chunk.shape})\n{chunk}")
+            log(f"=> Mask {i} ({mask.shape})\n{mask}")
 
-        print(f"Processed shape: tokens={token_chunks[0].shape}, masks={mask_chunks[0].shape}")
+        log(f"Processed shape: tokens={token_chunks[0].shape}, masks={mask_chunks[0].shape}")
 
         stacked_tokens = torch.stack(token_chunks).to(self.pipeline.device)
         stacked_masks  = torch.stack(mask_chunks).to(self.pipeline.device)
 
-        print(f"Stacked shape: tokens={stacked_tokens.shape}, masks={stacked_masks.shape}")
+        log(f"Stacked shape: tokens={stacked_tokens.shape}, masks={stacked_masks.shape}")
 
         return {
             self.token_chunks_out_name: stacked_tokens,
@@ -119,14 +122,14 @@ class ChunkTokenize(
             # Remove BOS and EOS
             tokens = tokenizer_output.input_ids.squeeze(dim=0)[1:-1]
 
-            print(f"Tokenized: '{text}' => ({tokens.numel()}) {tokens}")
+            log(f"Tokenized: '{text}' => ({tokens.numel()}) {tokens}")
 
             while (space := self.chunk_length - len(current_mask) - 1) < tokens.numel():
                 is_last_chunk = len(token_chunks) >= self.max_num_chunks
                 max_pad_length = self.max_last_pad_length if is_last_chunk else self.max_pad_length
 
                 if space > max_pad_length:
-                    print("Split long text")
+                    log("Split long text")
                     # This text-chunk is long, so split it across chunks
                     current_tokens.append(tokens[:space])
                     current_mask += [1] * space
@@ -138,7 +141,7 @@ class ChunkTokenize(
                     return token_chunks, mask_chunks
 
                 # Begin next chunk
-                print("--- New Chunk ---")
+                log("--- New Chunk ---")
                 current_tokens = [bos]
                 current_mask   = [1]
                 token_chunks.append(current_tokens)

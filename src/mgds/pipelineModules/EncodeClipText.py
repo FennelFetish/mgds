@@ -7,6 +7,11 @@ from mgds.PipelineModule import PipelineModule
 from mgds.pipelineModuleTypes.RandomAccessPipelineModule import RandomAccessPipelineModule
 
 
+def log(text: str):
+    #print(text)
+    pass
+
+
 class EncodeClipText(
     PipelineModule,
     RandomAccessPipelineModule,
@@ -49,11 +54,13 @@ class EncodeClipText(
 
     def get_item(self, variation: int, index: int, requested_name: str = None) -> dict:
         tokens = self._get_previous_item(variation, self.in_name, index)
-        tokens = tokens.unsqueeze(0)
+        if len(tokens.shape) < 2:
+            tokens = tokens.unsqueeze(0)
 
         if self.tokens_attention_mask_in_name is not None:
             tokens_attention_mask = self._get_previous_item(variation, self.tokens_attention_mask_in_name, index)
-            tokens_attention_mask = tokens_attention_mask.unsqueeze(0)
+            if len(tokens_attention_mask.shape) < 2:
+                tokens_attention_mask = tokens_attention_mask.unsqueeze(0)
         else:
             tokens_attention_mask = None
 
@@ -68,27 +75,41 @@ class EncodeClipText(
                 return_dict=True,
             )
 
-        hidden_states = text_encoder_output.hidden_states
+        # Pooled State shape: [n, 768 or 1280]
+        pooled_state = None
         if self.pooled_out_name:
             if hasattr(text_encoder_output, "text_embeds"):
                 pooled_state = text_encoder_output.text_embeds
             if hasattr(text_encoder_output, "pooler_output"):
                 pooled_state = text_encoder_output.pooler_output
 
-        else:
-            pooled_state = None
+            if pooled_state is not None:
+                log(f"Pooled State original shape: {pooled_state.shape}")
+                if pooled_state.shape[0] > 1:
+                    pooled_state = pooled_state[0]
+                    # TODO: Delete rest of tensor
+                    # TODO: Or cat, or calc mean?
+                else:
+                    pooled_state = pooled_state.squeeze(dim=0)
+                log(f"Pooled State processed shape: {pooled_state.shape}")
 
-        hidden_states = [hidden_state.squeeze(dim=0) for hidden_state in hidden_states]
-        pooled_state = None if pooled_state is None else pooled_state.squeeze(dim=0)
-
+        hidden_states = text_encoder_output.hidden_states
         hidden_state = hidden_states[self.hidden_state_output_index]
+        log(f"Text Encoder hidden_state shape: {hidden_state.shape}")
 
+        # Apply layer norm before concatenating chunks (TODO: Or after???)
         if self.add_layer_norm:
             with self._all_contexts(self.autocast_contexts):
+                log("Apply Layer Norm")
                 final_layer_norm = self.text_encoder.text_model.final_layer_norm
-                hidden_state = final_layer_norm(
-                    hidden_state
-                )
+                hidden_state = final_layer_norm(hidden_state)
+
+        # Resulting shape: [77*n, 768 or 1280]
+        if hidden_state.shape[0] > 1:
+            hidden_state = torch.vstack(hidden_state.unbind(0))
+        else:
+            hidden_state = hidden_state.squeeze(dim=0)
+        log(f"Text Encoder hidden_state shape after cat: {hidden_state.shape}")
 
         return {
             self.hidden_state_out_name: hidden_state,
