@@ -3,10 +3,10 @@ from contextlib import nullcontext
 import torch
 from mgds.PipelineModule import PipelineModule
 from mgds.pipelineModuleTypes.RandomAccessPipelineModule import RandomAccessPipelineModule
-from transformers import LlamaModel
+from transformers import Qwen2_5_VLForConditionalGeneration
 
 
-class EncodeLlamaText(
+class EncodeQwenText(
     PipelineModule,
     RandomAccessPipelineModule,
 ):
@@ -16,24 +16,19 @@ class EncodeLlamaText(
             tokens_attention_mask_in_name: str | None,
             hidden_state_out_name: str,
             tokens_attention_mask_out_name: str | None,
-            text_encoder: LlamaModel,
+            text_encoder: Qwen2_5_VLForConditionalGeneration,
             hidden_state_output_index: int | None = None,
-            output_all_hidden_states: bool = False,
-            all_hidden_state_output_indices: list[int] | None = None,
             crop_start: int | None = None,
             autocast_contexts: list[torch.autocast | None] = None,
             dtype: torch.dtype | None = None,
     ):
-        super(EncodeLlamaText, self).__init__()
+        super(EncodeQwenText, self).__init__()
         self.tokens_name = tokens_name
         self.tokens_attention_mask_in_name = tokens_attention_mask_in_name
         self.hidden_state_out_name = hidden_state_out_name
         self.tokens_attention_mask_out_name = tokens_attention_mask_out_name
         self.text_encoder = text_encoder
         self.hidden_state_output_index = hidden_state_output_index
-        self.output_all_hidden_states = output_all_hidden_states
-        self.max_hidden_state_output_index = max(all_hidden_state_output_indices) \
-            if all_hidden_state_output_indices is not None else None
         self.crop_start = crop_start
 
         self.autocast_contexts = [nullcontext()] if autocast_contexts is None else autocast_contexts
@@ -59,35 +54,23 @@ class EncodeLlamaText(
             tokens_attention_mask = None
 
         with self._all_contexts(self.autocast_contexts):
-            if tokens_attention_mask is not None and self.dtype:
-                tokens_attention_mask = tokens_attention_mask.to(dtype=self.dtype)
-
             text_encoder_output = self.text_encoder(
                 tokens,
-                attention_mask=tokens_attention_mask,
+                attention_mask=tokens_attention_mask.to(dtype=self.dtype),
                 output_hidden_states=True,
                 return_dict=True,
                 use_cache=False,
             )
 
         tokens = tokens.squeeze()
-        hidden_states = text_encoder_output.hidden_states
-        hidden_states = [hidden_state.squeeze(dim=0) for hidden_state in hidden_states]
-        if self.output_all_hidden_states:
-            hidden_state = hidden_states[1:self.max_hidden_state_output_index + 2]
-        else:
-            hidden_state = hidden_states[self.hidden_state_output_index]
+        hidden_state = text_encoder_output.hidden_states[self.hidden_state_output_index].squeeze(dim=0)
         tokens_attention_mask = tokens_attention_mask.squeeze(dim=0)
 
         if self.crop_start is not None:
             tokens = tokens[self.crop_start:]
-
-            if self.output_all_hidden_states:
-                hidden_state = [t[self.crop_start:] for t in hidden_state]
-            else:
-                hidden_state = hidden_state[self.crop_start:]
-
             tokens_attention_mask = tokens_attention_mask[self.crop_start:]
+            #set masked state to 0 should not make a difference, but the reference implementation in diffusers also does that:
+            hidden_state = hidden_state[self.crop_start:] * tokens_attention_mask.unsqueeze(dim=-1)
 
         return {
             self.tokens_name: tokens,
