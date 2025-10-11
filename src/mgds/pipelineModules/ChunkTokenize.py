@@ -135,15 +135,19 @@ class ChunkTokenize(
         self.__finalize_chunk(current_tokens, current_mask)
         return token_chunks, mask_chunks
 
-    def __finalize_chunk(self, current_tokens: list[int], current_mask: list[int], eos_mask: int = 1):
+    def __finalize_chunk(self, current_tokens: list[int], current_mask: list[int]):
         # Append EOS
         current_tokens.append(self._eos_id)
-        current_mask.append(eos_mask)
+        current_mask.append(1)
 
         # Append padding
         pad_length = self.chunk_length - len(current_tokens)
-        current_tokens += [self._pad_id] * pad_length
-        current_mask += [0] * pad_length
+        if pad_length > 0:
+            current_tokens += [self._pad_id] * pad_length
+
+            unmasked_pad_tokens = 1
+            current_mask += [1] * min(pad_length, unmasked_pad_tokens)
+            current_mask += [0] * (pad_length - unmasked_pad_tokens)
 
     def __add_empty_chunks(self, token_chunks: list[list[int]], mask_chunks: list[list[int]]):
         # Fill to max chunks to allow for batching. The padding chunks are all completely masked (=0).
@@ -153,7 +157,7 @@ class ChunkTokenize(
         #       dynamically and directly on the embeddings.
         num_pad_chunks = self.max_num_chunks - len(token_chunks)
         if num_pad_chunks > 0:
-            pad_tokens, pad_mask = [self._bos_id], [0]
-            self.__finalize_chunk(pad_tokens, pad_mask, 0)
+            pad_tokens, pad_mask = [self._bos_id], [1]
+            self.__finalize_chunk(pad_tokens, pad_mask)
             token_chunks += [pad_tokens] * num_pad_chunks
             mask_chunks += [pad_mask] * num_pad_chunks
