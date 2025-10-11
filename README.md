@@ -1,3 +1,9 @@
+# Changes in this fork
+
+- CLIP long prompt support for captions exceeding CLIP's 75-token limit.
+- ScaleImage takes interpolation parameter
+  - This is used to scale masks with nearest-neighbor interpolation, avoiding blur and therefore bleeding. Black regions in the masks are kept black.
+
 # MGDS
 
 MGDS is a custom dataset implementation for Pytorch that is built around the idea of a node based graph.
@@ -7,4 +13,4 @@ down the chain. This modular approach enables highly complex data processing pip
 pre-built modules.
 
 This project is currently developed for the use in [OneTrainer](https://github.com/Nerogar/OneTrainer), but it can be
-used in all kinds of different applications. 
+used in all kinds of different applications.
