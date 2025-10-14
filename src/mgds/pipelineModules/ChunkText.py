@@ -29,9 +29,17 @@ class ChunkText(
     def get_item(self, variation: int, index: int, requested_name: str = None) -> dict:
         text: str = self._get_previous_item(variation, self.text_in_name, index)
 
+        return {
+            self.text_chunks_out_name: self.chunk_text(text)
+        }
+
+
+    @staticmethod
+    def chunk_text(text: str, delimeter_chars: str = ",.:;") -> list[str]:
         text_chunks = list[str]()
+
         while text:
-            deli_index = next((i for i, char in enumerate(text) if char in self.delimeter_chars), -1)
+            deli_index = next((i for i, char in enumerate(text) if char in delimeter_chars), -1)
             if deli_index < 0:
                 text_chunks.append(text)
                 break
@@ -41,6 +49,4 @@ class ChunkText(
             text_chunks.append(text[deli_index])
             text = text[deli_index+1:]
 
-        return {
-            self.text_chunks_out_name: text_chunks
-        }
+        return text_chunks
