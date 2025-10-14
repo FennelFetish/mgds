@@ -1,5 +1,6 @@
 from transformers import CLIPTokenizer
 import torch
+import math
 
 from mgds.PipelineModule import PipelineModule
 from mgds.pipelineModuleTypes.RandomAccessPipelineModule import RandomAccessPipelineModule
@@ -8,18 +9,39 @@ from mgds.pipelineModuleTypes.RandomAccessPipelineModule import RandomAccessPipe
 # Chunks: [       Prompt      ][        Continued       ][       Empty      ]
 # Tokens: <BOS>CHUNK1<EOS><PAD><BOS>CHUNK2<EOS><PAD><PAD><BOS><EOS><PAD><PAD>
 # Padding:                -----                ----------          ----------
-# Mask:   1111111111111111000001111111111111111000000000000000000000000000000
+# Mask:   1111111111111111000001111111111111111000000000011111111110000000000
 
 
-# TODO: Variations / Augmentation for padding and attention mask:
-# - Different max_pad_length
-# - Shuffle text-chunks around chunks
-# - Different masks, some with padding (or patches of padding) enabled
-# It should learn that padding and chunk number is irrelevant.
+class ChunkTokenizerData:
+    def __init__(
+            self,
+            tokenizer: CLIPTokenizer,
+            max_num_chunks: int = 1,
+            max_pad_length: int = 7,  # This should be accounted for when choosing max_num_chunks
+            max_last_pad_length: int = 2,
+            unmasked_padding: int = 0,
+            dynamic_length: bool = False,
+    ):
+        self.tokenizer = tokenizer
 
+        self.max_num_chunks = 1000000 if dynamic_length else max_num_chunks
+        self.max_pad_length = max_pad_length
+        self.max_last_pad_length = min(max_last_pad_length, max_pad_length)
+        self.unmasked_padding = unmasked_padding if unmasked_padding >= 0 else 1000000
+        self.dynamic_length = dynamic_length
 
-def log(text: str):
-    print(text)
+        self.chunk_length: int = tokenizer.model_max_length
+
+        self.bos_id: int = self.tokenizer.bos_token_id
+        self.eos_id: int = self.tokenizer.eos_token_id
+        self.pad_id: int = self.tokenizer.pad_token_id
+
+    @staticmethod
+    def with_max_length(tokenizer: CLIPTokenizer, max_length: int):
+        max_num_chunks = math.ceil(max_length / tokenizer.model_max_length)
+        dynamic_length = (max_length <= 0)
+        return ChunkTokenizerData(tokenizer, max_num_chunks=max_num_chunks, dynamic_length=dynamic_length)
+
 
 
 class ChunkTokenize(
@@ -33,25 +55,24 @@ class ChunkTokenize(
             mask_chunks_out_name: str,
             tokenizer: CLIPTokenizer,
             max_num_chunks: int = 1,
-            max_pad_length: int = 7,  # This should be accounted for when choosing max_num_chunks
+            max_pad_length: int = 7,
             max_last_pad_length: int = 2,
+            unmasked_padding: int = 0,
+            dynamic_length: bool = False,
     ):
         super(ChunkTokenize, self).__init__()
         self.text_chunks_in_name = text_chunks_in_name
         self.token_chunks_out_name = token_chunks_out_name
         self.mask_chunks_out_name = mask_chunks_out_name
-        self.tokenizer = tokenizer
 
-        self.max_num_chunks = max_num_chunks
-        self.max_pad_length = max_pad_length
-        self.max_last_pad_length = min(max_last_pad_length, max_pad_length)
-
-        self.chunk_length: int = tokenizer.model_max_length
-
-        self._bos_id: int = self.tokenizer.bos_token_id
-        self._eos_id: int = self.tokenizer.eos_token_id
-        self._pad_id: int = self.tokenizer.pad_token_id
-        #log(f"Tokenizer BOS: {self._bos_id}, EOS: {self._eos_id}, PAD: {self._pad_id}")
+        self.data = ChunkTokenizerData(
+            tokenizer,
+            max_num_chunks,
+            max_pad_length,
+            max_last_pad_length,
+            unmasked_padding,
+            dynamic_length,
+        )
 
     def length(self) -> int:
         return self._get_previous_length(self.text_chunks_in_name)
@@ -65,34 +86,38 @@ class ChunkTokenize(
     def get_item(self, variation: int, index: int, requested_name: str = None) -> dict:
         text_chunks: list[str] = self._get_previous_item(variation, self.text_chunks_in_name, index)
 
-        token_chunks, mask_chunks = self.__tokenize_chunks(text_chunks)
-        self.__add_empty_chunks(token_chunks, mask_chunks)
-
-        token_chunks = torch.tensor(token_chunks, dtype=torch.long, device=self.pipeline.device)
-        mask_chunks  = torch.tensor(mask_chunks, dtype=torch.long, device=self.pipeline.device)
-
-        # log(f"Shapes: tokens={token_chunks.shape}, masks={mask_chunks.shape}")
-        # log(f"Final Tokens: {token_chunks}")
-        # log(f"Final Mask: {mask_chunks}")
+        token_chunks, mask_chunks = self.tokenize(self.data, text_chunks, self.pipeline.device)
 
         return {
             self.token_chunks_out_name: token_chunks,
             self.mask_chunks_out_name: mask_chunks,
         }
 
-    def __tokenize_chunks(self, text_chunks: list[str]) -> tuple[list[list[int]], list[list[int]]]:
-        current_tokens: list[int] = [self._bos_id]
+    @classmethod
+    def tokenize(cls, tokenizer_data: ChunkTokenizerData, text_chunks: list[str], device="cpu") -> tuple[torch.Tensor, torch.Tensor]:
+        token_chunks, mask_chunks = cls.__tokenize_chunks(tokenizer_data, text_chunks)
+
+        if not tokenizer_data.dynamic_length:
+            cls.__add_empty_chunks(tokenizer_data, token_chunks, mask_chunks)
+
+        #cls.__print_debug(token_chunks, mask_chunks)
+
+        token_chunks = torch.tensor(token_chunks, dtype=torch.long, device=device)
+        mask_chunks  = torch.tensor(mask_chunks, dtype=torch.long, device=device)
+        return token_chunks, mask_chunks
+
+    @classmethod
+    def __tokenize_chunks(cls, data: ChunkTokenizerData, text_chunks: list[str]) -> tuple[list[list[int]], list[list[int]]]:
+        current_tokens: list[int] = [data.bos_id]
         current_mask: list[int]   = [1]
 
         token_chunks: list[list[int]] = [current_tokens]
         mask_chunks: list[list[int]]  = [current_mask]
 
-        max_total_tokens = self.chunk_length * self.max_num_chunks
+        max_total_tokens = data.chunk_length * data.max_num_chunks
 
-        #log("Text:")
-        #log("".join(text_chunks))
         for text in text_chunks:
-            tokenizer_output = self.tokenizer(
+            tokenizer_output = data.tokenizer(
                 text,
                 padding=False,
                 truncation=True,
@@ -102,28 +127,25 @@ class ChunkTokenize(
             )
 
             tokens: list[int] = tokenizer_output.input_ids
-            #log(f"Tokenized: '{text}' => ({len(tokens)}) {tokens}")
 
-            # While the tokens don't fit in current chunk
-            while (space := self.chunk_length - len(current_tokens) - 1) < len(tokens):
-                is_last_chunk = len(token_chunks) >= self.max_num_chunks
-                max_pad_length = self.max_last_pad_length if is_last_chunk else self.max_pad_length
+            # While the tokens don't fit in current chunk. (-1: Leave space for EOS)
+            while (space := data.chunk_length - len(current_tokens) - 1) < len(tokens):
+                is_last_chunk = len(token_chunks) >= data.max_num_chunks
+                max_pad_length = data.max_last_pad_length if is_last_chunk else data.max_pad_length
 
                 if space > max_pad_length:
-                    #log("Split long text")
                     # This text-chunk is long, so split it across chunks
                     current_tokens += tokens[:space]
                     current_mask += [1] * space
                     tokens = tokens[space:]
 
-                self.__finalize_chunk(current_tokens, current_mask)
+                cls.__finalize_chunk(data, current_tokens, current_mask)
 
                 if is_last_chunk:
                     return token_chunks, mask_chunks
 
                 # Begin next chunk
-                #log("--- New Chunk ---")
-                current_tokens = [self._bos_id]
+                current_tokens = [data.bos_id]
                 current_mask   = [1]
                 token_chunks.append(current_tokens)
                 mask_chunks.append(current_mask)
@@ -132,32 +154,51 @@ class ChunkTokenize(
             current_tokens += tokens
             current_mask += [1] * len(tokens)
 
-        self.__finalize_chunk(current_tokens, current_mask)
+        cls.__finalize_chunk(data, current_tokens, current_mask)
         return token_chunks, mask_chunks
 
-    def __finalize_chunk(self, current_tokens: list[int], current_mask: list[int]):
+    @staticmethod
+    def __finalize_chunk(data: ChunkTokenizerData, current_tokens: list[int], current_mask: list[int]):
         # Append EOS
-        current_tokens.append(self._eos_id)
+        current_tokens.append(data.eos_id)
         current_mask.append(1)
 
         # Append padding
-        pad_length = self.chunk_length - len(current_tokens)
+        pad_length = data.chunk_length - len(current_tokens)
         if pad_length > 0:
-            current_tokens += [self._pad_id] * pad_length
+            current_tokens += [data.pad_id] * pad_length
 
-            unmasked_pad_tokens = 1
-            current_mask += [1] * min(pad_length, unmasked_pad_tokens)
-            current_mask += [0] * (pad_length - unmasked_pad_tokens)
+            current_mask += [1] * min(pad_length, data.unmasked_padding)
+            current_mask += [0] * (data.chunk_length - len(current_mask))
 
-    def __add_empty_chunks(self, token_chunks: list[list[int]], mask_chunks: list[list[int]]):
-        # Fill to max chunks to allow for batching. The padding chunks are all completely masked (=0).
+    @classmethod
+    def __add_empty_chunks(cls, data: ChunkTokenizerData, token_chunks: list[list[int]], mask_chunks: list[list[int]]):
+        # Fill to max chunks to allow for batching.
         # TODO: This is not strictly required if batch size is 1, but without padding chunks,
         #       the cache would need rebuilding when the batch size is changed.
         #       Maybe the padding could be done later when selecting samples for batches,
         #       dynamically and directly on the embeddings.
-        num_pad_chunks = self.max_num_chunks - len(token_chunks)
+        #       This would reduce cache size, but introduce overhead during training.
+        num_pad_chunks = data.max_num_chunks - len(token_chunks)
         if num_pad_chunks > 0:
-            pad_tokens, pad_mask = [self._bos_id], [1]
-            self.__finalize_chunk(pad_tokens, pad_mask)
+            pad_tokens, pad_mask = [data.bos_id], [1]
+            cls.__finalize_chunk(data, pad_tokens, pad_mask)
             token_chunks += [pad_tokens] * num_pad_chunks
             mask_chunks += [pad_mask] * num_pad_chunks
+
+
+    @staticmethod
+    def __print_debug(token_chunks: list[list[int]], mask_chunks: list[list[int]]):
+        assert len(token_chunks) == len(mask_chunks)
+        for chunk_nr, (tokens, mask) in enumerate(zip(token_chunks, mask_chunks), 1):
+            title = f"[{chunk_nr}] "
+            print(title, end="")
+
+            for i, (t, m) in enumerate(zip(tokens, mask), 1):
+                print(f"{t:5}:{m}  ", end="")
+                if i % 10 == 0 and i < len(tokens):
+                    print()
+                    print(" " * len(title), end="")
+
+            print()
+        print()
