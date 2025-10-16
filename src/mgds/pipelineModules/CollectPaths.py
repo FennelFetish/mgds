@@ -13,7 +13,7 @@ class CollectPaths(
     def __init__(
             self,
             concept_in_name: str, path_in_name: str, include_subdirectories_in_name: str, enabled_in_name: str,
-            path_out_name: str, concept_out_name: str,
+            path_out_name: str, concept_out_name: str, concept_index_out_name: str, concept_meta_out_name: str,
             extensions: list[str], include_postfix: list[str] | None, exclude_postfix: list[str],
     ):
         super(CollectPaths, self).__init__()
@@ -25,6 +25,8 @@ class CollectPaths(
 
         self.path_out_name = path_out_name
         self.concept_out_name = concept_out_name
+        self.concept_index_out_name = concept_index_out_name
+        self.concept_meta_out_name = concept_meta_out_name
 
         self.extensions = [extension.lower() for extension in extensions]
         self.include_postfix = include_postfix
@@ -32,6 +34,9 @@ class CollectPaths(
 
         self.paths = []
         self.concepts = []
+        self.concept_indexes = []
+
+        self.meta_concepts = []
 
     def length(self) -> int:
         return len(self.paths)
@@ -40,7 +45,7 @@ class CollectPaths(
         return [self.concept_in_name]
 
     def get_outputs(self) -> list[str]:
-        return [self.path_out_name, self.concept_out_name]
+        return [self.path_out_name, self.concept_out_name, self.concept_index_out_name, self.concept_meta_out_name]
 
     def __list_files(self, path: str, include_subdirectories: bool) -> list[str]:
         dir_list = [os.path.join(path, filename) for filename in os.listdir(path)]
@@ -77,10 +82,20 @@ class CollectPaths(
 
                 self.paths.extend(file_names)
                 self.concepts.extend([concept] * len(file_names))
+                self.concept_indexes.extend([in_index] * len(file_names))
+
+                self.meta_concepts.append(concept)
 
     def get_item(self, variation: int, index: int, requested_name: str = None) -> dict:
         #note: index is not the same index as the index in previous nodes
         return {
             self.path_out_name: self.paths[index],
             self.concept_out_name: self.concepts[index],
+            self.concept_index_out_name: self.concept_indexes[index],
         }
+
+    def get_meta(self, variation: int, name: str) -> list[dict] | None:
+        if name == self.concept_meta_out_name:
+            return self.meta_concepts
+        else:
+            return None
