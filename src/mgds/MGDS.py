@@ -1,7 +1,7 @@
 import random
 
 import torch
-from torch.utils.data import DataLoader, Dataset, IterableDataset
+from torch.utils.data import DataLoader, IterableDataset, default_collate
 
 from mgds.ConceptPipelineModule import ConceptPipelineModule
 from mgds.LoadingPipeline import LoadingPipeline
@@ -50,5 +50,16 @@ class MGDS(IterableDataset):
 
 
 class TrainDataLoader(DataLoader):
-    def __init__(self, dataset: MGDS, batch_size):
-        super(TrainDataLoader, self).__init__(dataset, batch_size=batch_size, drop_last=True)
+    def __init__(self, dataset: MGDS, batch_size: int, collate_bypass_keys: list[str] = []):
+        super(TrainDataLoader, self).__init__(dataset, batch_size=batch_size, collate_fn=self._collate, drop_last=True)
+        self.collate_bypass_keys = set(collate_bypass_keys)
+
+    def _collate(self, batch_data: list[dict]) -> dict:
+        bypass_items = [
+            (key, [sample_dict.pop(key, None) for sample_dict in batch_data])
+            for key in self.collate_bypass_keys
+        ]
+
+        batch: dict = default_collate(batch_data)
+        batch.update(bypass_items)
+        return batch
