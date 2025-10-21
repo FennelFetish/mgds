@@ -33,8 +33,7 @@ class CollectPaths(
         self.exclude_postfix = exclude_postfix
 
         self.paths = []
-        self.concepts = []
-        self.concept_indexes = []
+        self.concept_indices = []
 
         self.meta_concepts = []
 
@@ -81,17 +80,19 @@ class CollectPaths(
                         os.path.splitext(name)[0].endswith(postfix) for postfix in self.exclude_postfix), file_names))
 
                 self.paths.extend(file_names)
-                self.concepts.extend([concept] * len(file_names))
-                self.concept_indexes.extend([in_index] * len(file_names))
+
+                concept_index = len(self.meta_concepts)
+                self.concept_indices.extend([concept_index] * len(file_names))
 
                 self.meta_concepts.append(concept)
 
     def get_item(self, variation: int, index: int, requested_name: str = None) -> dict:
-        #note: index is not the same index as the index in previous nodes
+        #note: length changed. index is not the same index as the index in previous nodes
+        concept_index = self.concept_indices[index]
         return {
             self.path_out_name: self.paths[index],
-            self.concept_out_name: self.concepts[index],
-            self.concept_index_out_name: self.concept_indexes[index],
+            self.concept_out_name: self.meta_concepts[concept_index],
+            self.concept_index_out_name: concept_index,
         }
 
     def get_meta(self, variation: int, name: str) -> list[dict] | None:
